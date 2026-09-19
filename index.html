@@ -403,6 +403,7 @@ body {
   margin-top: 5px;
   min-height: 0;
   overflow: hidden;
+  will-change: transform, opacity;
 }
 .mp-cell {
   position: relative;
@@ -513,7 +514,7 @@ body {
 
   <section class="weather-header">
     <div class="weather-top">
-      <div class="place" id="place" title="长按切换城市">
+      <div class="place" id="place" title="点击切换城市">
         <svg viewBox="0 0 12 12" fill="none">
           <path d="M6 1.2c1.9 0 3.5 1.5 3.5 3.4 0 2.4-3.5 6.2-3.5 6.2S2.5 7 2.5 4.6C2.5 2.7 4.1 1.2 6 1.2z" stroke="currentColor" stroke-width="1.2"/>
           <circle cx="6" cy="4.6" r="1.1" fill="currentColor"/>
@@ -958,7 +959,10 @@ function restOf(date) {
   var key = ymd(date);
   if (restCache[key] !== undefined) return restCache[key];
 
-  var v = statutoryRest(date);
+  /* 优先查「实际放假安排表」；查不到时再回退到「法定假日」规则 */
+  var v = REST_DAYS[key] || statutoryRest(date);
+
+  /* 补班日不算休 */
   if (WORK_DAYS[key]) v = '';
 
   restCache[key] = v;
@@ -1700,19 +1704,56 @@ function closeMonthPanel() {
   reportHeight();
 }
 
+/* 整月面板切换时的滑动方向锁，避免动画期间重复触发 */
+var mpShifting = false;
+
 function shiftMonth(delta) {
-  var m = mpState.month + delta;
-  var y = mpState.year;
-  if (m < 0) { m += 12; y -= 1; }
-  if (m > 11) { m -= 12; y += 1; }
-  mpState.year = y;
-  mpState.month = m;
-  renderMonth(y, m, state.wmap);
+  if (mpShifting) return;
+  mpShifting = true;
+
+  var grid = $('mpGrid');
+  var dir = delta > 0 ? 1 : -1;   /* 1 = 下个月（向左滑入），-1 = 上个月 */
+  var dur = 180;
+
+  /* 第一步：旧内容向滑动反方向淡出、平移出去 */
+  grid.style.transition =
+    'transform ' + dur + 'ms ease-out, opacity ' + dur + 'ms ease-out';
+  grid.style.transform = 'translateX(' + (-dir * 40) + 'px)';
+  grid.style.opacity = '0';
+
+  setTimeout(function () {
+
+    /* 第二步：计算新月份 */
+    var m = mpState.month + delta;
+    var y = mpState.year;
+    if (m < 0) { m += 12; y -= 1; }
+    if (m > 11) { m -= 12; y += 1; }
+    mpState.year = y;
+    mpState.month = m;
+
+    /* 把新内容先摆到相反的一侧，并取消过渡 */
+    grid.style.transition = 'none';
+    grid.style.transform = 'translateX(' + (dir * 40) + 'px)';
+
+    renderMonth(y, m, state.wmap);
+
+    /* 强制回流，让浏览器认下新起点 */
+    void grid.offsetWidth;
+
+    /* 第三步：新内容滑入并淡入 */
+    grid.style.transition =
+      'transform ' + dur + 'ms ease-out, opacity ' + dur + 'ms ease-out';
+    grid.style.transform = 'translateX(0)';
+    grid.style.opacity = '1';
+
+    setTimeout(function () { mpShifting = false; }, dur);
+
+  }, dur);
 }
 
-/* =========================================================
+/* 
    状态 / 刷新
-========================================================= */
+ */
 function setLoadingUI() {
   $('updateTime').innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
   $('weatherError').classList.remove('show');
@@ -1803,42 +1844,21 @@ $('mpClose').addEventListener('click', function () { closeMonthPanel(); });
   });
 })();
 
-/* 长按位置 → 切换城市 */
+/* 单击位置 → 切换城市 */
 (function () {
   var el = $('place');
-  var timer = 0;
-  var longPressed = false;
 
-  function startPress() {
-    longPressed = false;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(function () {
-      timer = 0;
-      longPressed = true;
-      var name = window.prompt(
-        '输入城市名（例：上海 / 广州 / 杭州）',
-        state.place || ''
-      );
-      if (name && name.trim()) switchCity(name.trim());
-    }, 700);
-  }
-  function cancelPress() {
-    if (timer) { clearTimeout(timer); timer = 0; }
-  }
-
-  el.addEventListener('touchstart', function (e) {
-    e.preventDefault();
-    startPress();
-  }, { passive: false });
-  el.addEventListener('touchend', cancelPress);
-  el.addEventListener('touchcancel', cancelPress);
-  el.addEventListener('touchmove', cancelPress, { passive: true });
-
-  el.addEventListener('mousedown', startPress);
-  el.addEventListener('mouseup', cancelPress);
-  el.addEventListener('mouseleave', cancelPress);
   el.addEventListener('click', function (e) {
-    if (longPressed) e.stopPropagation();
+    e.stopPropagation();
+
+    var name = window.prompt(
+      '输入城市名（例：上海 / 广州 / 杭州）',
+      state.place || ''
+    );
+
+    if (name && name.trim()) {
+      switchCity(name.trim());
+    }
   });
 })();
 
